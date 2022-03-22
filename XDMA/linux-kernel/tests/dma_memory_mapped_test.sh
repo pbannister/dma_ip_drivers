@@ -15,11 +15,11 @@ if [ $# -eq 0 ]; then
 	display_help
 fi
 
-xid=$1
-transferSz=$2
-transferCount=$3
-h2cChannels=$4
-c2hChannels=$5
+xid=${1-0}
+transferSz=${2-4096}
+transferCount=${3-1}
+h2cChannels=${4-1}
+c2hChannels=${5-1}
 
 tool_path=../tools
 
