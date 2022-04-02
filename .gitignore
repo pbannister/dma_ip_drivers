@@ -8,3 +8,9 @@
 Module.symvers
 modules.order
 .tmp_versions
+XDMA/linux-kernel/tools/fill
+XDMA/linux-kernel/tools/reg_rw
+XDMA/linux-kernel/tools/test_chrdev
+XDMA/linux-kernel/tools/dma_from_device
+XDMA/linux-kernel/tools/performance
+XDMA/linux-kernel/tools/dma_to_device
