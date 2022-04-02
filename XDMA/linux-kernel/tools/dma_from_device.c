@@ -32,23 +32,80 @@
 #define COUNT_DEFAULT (1)
 
 static struct option const long_opts[] = {
-	{"device", required_argument, NULL, 'd'},
-	{"address", required_argument, NULL, 'a'},
-	{"aperture", required_argument, NULL, 'k'},
-	{"size", required_argument, NULL, 's'},
-	{"offset", required_argument, NULL, 'o'},
-	{"count", required_argument, NULL, 'c'},
-	{"file", required_argument, NULL, 'f'},
-	{"eop_flush", no_argument, NULL, 'e'},
-	{"help", no_argument, NULL, 'h'},
-	{"verbose", no_argument, NULL, 'v'},
-	{0, 0, 0, 0}
-};
+    {"device", required_argument, NULL, 'd'},
+    {"address", required_argument, NULL, 'a'},
+    {"aperture", required_argument, NULL, 'k'},
+    {"size", required_argument, NULL, 's'},
+    {"offset", required_argument, NULL, 'o'},
+    {"count", required_argument, NULL, 'c'},
+    {"file", required_argument, NULL, 'f'},
+    {"eop_flush", no_argument, NULL, 'e'},
+    {"help", no_argument, NULL, 'h'},
+    {"verbose", no_argument, NULL, 'v'},
+    {"inspect", no_argument, NULL, 'i'},
+    {0, 0, 0, 0}};
 
 static int test_dma(char *devname, uint64_t addr, uint64_t aperture, 
 		uint64_t size, uint64_t offset, uint64_t count,
 		char *ofname);
 static int eop_flush = 0;
+
+void buffer_prefill(char *p_buffer, uint64_t n_buffer) {
+    unsigned n = 0;
+    char *p_here = p_buffer;
+    char *p_eob = p_buffer + n_buffer;
+    while (p_here < p_eob) {
+        *p_here++ = (255 & n++);
+    }
+}
+
+void buffer_check(char *p_buffer, uint64_t n_buffer) {
+    unsigned matched1 = 0;
+    unsigned matched2 = 0;
+    unsigned altered1 = 0;
+    unsigned altered2 = 0;
+    unsigned matching1 = 1;
+    unsigned i = 0;
+    for (i = 0; i < n_buffer; ++i) {
+        int v1 = 255 & i;
+        int v2 = 255 & p_buffer[i];
+        unsigned matching2 = (v1 == v2);
+        // printf(".... (%02x == %02x)\n", v1, v2);
+        if (matching1 == matching2) {
+            // no change
+        } else {
+            if (matching1) {
+                matched2 = i;
+                altered1 = i;
+                if (matched1 < matched2) {
+                    printf("PASS %u upto %u\nFAIL (%02x == %02x)\n", matched1, matched2, v1, v2);
+                }
+            } else {
+                altered2 = i;
+                matched1 = i;
+                if (altered1 < altered2) {
+                    printf("FAIL %u upto %u\n", altered1, altered2);
+                }
+            }
+            matching1 = matching2;
+        }
+    }
+    if (matched1 < altered1) {
+        printf("FAIL %u upto %u\n", altered1, n_buffer);
+    } else {
+        printf("PASS %u upto %u\n", matched1, n_buffer);
+    }
+}
+
+static void test_buffer(unsigned size) {
+    char *allocated = NULL;
+    posix_memalign((void **)&allocated, 4096 /*alignment */, size + 4096);
+    buffer_prefill(allocated, size);
+    buffer_check(allocated, size);
+    allocated[11] = 123;
+    buffer_check(allocated, size);
+    exit(1);
+}
 
 static void usage(const char *name)
 {
@@ -94,6 +151,9 @@ static void usage(const char *name)
 	fprintf(stdout, "  -%c (--%s) verbose output\n",
 		long_opts[i].val, long_opts[i].name);
 	i++;
+	fprintf(stdout, "  -%c (--%s) inspect buffer\n",
+		long_opts[i].val, long_opts[i].name);
+	i++;
 
 	fprintf(stdout, "\nReturn code:\n");
 	fprintf(stdout, "  0: all bytes were dma'ed successfully\n");
@@ -112,7 +172,7 @@ int main(int argc, char *argv[])
 	uint64_t count = COUNT_DEFAULT;
 	char *ofname = NULL;
 
-	while ((cmd_opt = getopt_long(argc, argv, "vhec:f:d:a:k:s:o:", long_opts,
+	while ((cmd_opt = getopt_long(argc, argv, "vheic:f:d:a:k:s:o:", long_opts,
 			    NULL)) != -1) {
 		switch (cmd_opt) {
 		case 0:
@@ -147,7 +207,10 @@ int main(int argc, char *argv[])
 			break;
 			/* print usage help and exit */
 		case 'v':
-			verbose = 1;
+			++verbose;
+			break;
+		case 'i':
+			++inspect;
 			break;
 		case 'e':
 			eop_flush = 1;
@@ -224,7 +287,7 @@ static int test_dma(char *devname, uint64_t addr, uint64_t aperture,
 
 	buffer = allocated + offset;
 	if (verbose)
-	fprintf(stdout, "host buffer 0x%lx, %p.\n", size + 4096, buffer);
+		fprintf(stdout, "host buffer 0x%lx, %p.\n", size + 4096, buffer);
 
 	for (i = 0; i < count; i++) {
 		rc = clock_gettime(CLOCK_MONOTONIC, &ts_start);
