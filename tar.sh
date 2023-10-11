@@ -1,6 +1,6 @@
 #!/bin/sh
 
-BASE=${BASE-/recorder/common}
+BASE=${BASE-$HOME}
 WHAT=${WHAT-dma_ip_drivers}
 DEST=${DEST-$BASE}
 
