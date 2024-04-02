@@ -1,8 +1,8 @@
 /*
  * This file is part of the Xilinx DMA IP Core driver for Linux
  *
- * Copyright (c) 2017-2022,  Xilinx, Inc.
- * All rights reserved.
+ * Copyright (c) 2017-2022, Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2022, Advanced Micro Devices, Inc. All rights reserved.
  *
  * This source code is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -42,6 +42,9 @@
 #ifdef DEBUGFS
 #include "qdma_debugfs_dev.h"
 #endif
+#ifdef __XRT__
+#include "qdma_access_errors.h"
+#endif
 
 #ifdef __LIST_NEXT_ENTRY__
 #define list_next_entry(pos, member) \
@@ -53,6 +56,11 @@
 #define QDMA_QBASE 0
 #endif
 #ifndef QDMA_TOTAL_Q
+/**
+ * CPM5 supports 4095 Qs & all other designs supports 2048 Qs.
+ * Though the number here is given as 2K Qs,
+ * actual qmax is extracted from dev cap.
+ */
 #define QDMA_TOTAL_Q 2048
 #endif
 #endif
@@ -91,12 +99,13 @@ struct qdma_resource_lock {
 static int pci_dma_mask_set(struct pci_dev *pdev)
 {
 	/** 64-bit addressing capability for XDMA? */
-	if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) {
+
+	if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(64))) {
 		/** use 64-bit DMA for descriptors */
-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 		/** use 64-bit DMA, 32-bit for consistent */
-	} else if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+	} else if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(32))) {
+		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 		/** use 32-bit DMA */
 		dev_info(&pdev->dev, "Using a 32-bit DMA mask.\n");
 	} else {
@@ -529,6 +538,7 @@ static int xdev_map_bars(struct xlnx_dma_dev *xdev, struct pci_dev *pdev)
 static int xdev_identify_bars(struct xlnx_dma_dev *xdev, struct pci_dev *pdev)
 {
 	int bar_idx = 0;
+	int rv = 0;
 	u8 num_bars_present = 0;
 	int bar_id_list[QDMA_BAR_NUM];
 	int bar_id_idx = 0;
@@ -547,7 +557,6 @@ static int xdev_identify_bars(struct xlnx_dma_dev *xdev, struct pci_dev *pdev)
 	}
 
 	if (num_bars_present > 1) {
-		int rv = 0;
 
 		/* AXI Master Lite BAR IDENTIFICATION */
 		if ((xdev->version_info.ip_type == QDMA_VERSAL_HARD_IP) &&
@@ -569,7 +578,14 @@ static int xdev_identify_bars(struct xlnx_dma_dev *xdev, struct pci_dev *pdev)
 		if (rv < 0) {
 			pr_err("get AXI Master Lite bar failed with error = %d",
 					rv);
+#ifdef __XRT__
+			/** This change is for XRT application,
+			 * when there is no user BAR in desin
+			 */
+			rv = QDMA_ERR_HWACC_BAR_NOT_FOUND;
+#else
 			return xdev->hw.qdma_get_error_code(rv);
+#endif
 		}
 
 		pr_info("AXI Master Lite BAR %d.\n",
@@ -592,7 +608,7 @@ static int xdev_identify_bars(struct xlnx_dma_dev *xdev, struct pci_dev *pdev)
 			}
 		}
 	}
-	return 0;
+	return rv;
 }
 
 /*****************************************************************************/
@@ -900,7 +916,7 @@ int qdma_device_online(struct pci_dev *pdev, unsigned long dev_hndl, int reset)
 		xdev->err_mon_cancel = 0;
 		INIT_DELAYED_WORK(&xdev->err_mon, qdma_err_mon);
 		schedule_delayed_work(&xdev->err_mon,
-				      msecs_to_jiffies(1000));
+					  msecs_to_jiffies(1000));
 	}
 
 	/**
@@ -1111,7 +1127,7 @@ int qdma_device_open(const char *mod_name, struct qdma_dev_conf *conf,
 
 	rv = qdma_dev_qinfo_get(xdev->dma_device_index, xdev->func_id,
 				&xdev->conf.qsets_base,
-				(uint32_t *) &xdev->conf.qsets_max);
+				&xdev->conf.qsets_max);
 	if (rv < 0) {
 		rv = qdma_dev_entry_create(xdev->dma_device_index,
 				xdev->func_id);
@@ -1154,8 +1170,6 @@ int qdma_device_open(const char *mod_name, struct qdma_dev_conf *conf,
 		goto unmap_bars;
 	}
 
-	memcpy(conf, &xdev->conf, sizeof(*conf));
-
 	rv = qdma_device_online(pdev, (unsigned long)xdev, XDEV_FLR_INACTIVE);
 	if (rv < 0) {
 		pr_warn("Failed to set the dma device  online, err = %d", rv);
@@ -1163,10 +1177,12 @@ int qdma_device_open(const char *mod_name, struct qdma_dev_conf *conf,
 	}
 
 	rv = xdev_identify_bars(xdev, pdev);
-	if (rv) {
+	if (rv < 0) {
 		pr_err("Failed to identify bars, err %d", rv);
 		goto unmap_bars;
 	}
+
+	memcpy(conf, &xdev->conf, sizeof(*conf));
 
 	pr_info("%s, %05x, pdev 0x%p, xdev 0x%p, ch %u, q %u, vf %u.\n",
 		dev_name(&pdev->dev), xdev->conf.bdf, pdev, xdev,
@@ -1179,7 +1195,7 @@ int qdma_device_open(const char *mod_name, struct qdma_dev_conf *conf,
 
 	*dev_hndl = (unsigned long)xdev;
 
-	return 0;
+	return rv;
 
 cleanup_qdma:
 	qdma_device_offline(pdev, (unsigned long)xdev, XDEV_FLR_INACTIVE);

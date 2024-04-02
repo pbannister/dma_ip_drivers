@@ -1,8 +1,8 @@
 /*
  * This file is part of the Xilinx DMA IP Core driver for Linux
  *
- * Copyright (c) 2017-2022,  Xilinx, Inc.
- * All rights reserved.
+ * Copyright (c) 2017-2022, Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2022, Advanced Micro Devices, Inc. All rights reserved.
  *
  * This source code is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -116,12 +116,18 @@ static irqreturn_t user_intr_handler(int irq_index, int irq, void *dev_id)
 {
 	struct xlnx_dma_dev *xdev = dev_id;
 
-	pr_info("User IRQ fired on Funtion#%d: index=%d, vector=%d\n",
+	pr_debug("User IRQ fired on Funtion#%d: index=%d, vector=%d\n",
 		xdev->func_id, irq_index, irq);
 
-	if (xdev->conf.fp_user_isr_handler)
+	if (xdev->conf.fp_user_isr_handler) {
+#ifndef __XRT__
 		xdev->conf.fp_user_isr_handler((unsigned long)xdev,
 						xdev->conf.uld);
+#else
+		xdev->conf.fp_user_isr_handler((unsigned long)xdev,
+						irq_index, xdev->conf.uld);
+#endif
+	}
 
 	return IRQ_HANDLED;
 }
@@ -254,10 +260,10 @@ static void data_intr_aggregate(struct xlnx_dma_dev *xdev, int vidx, int irq,
 		queue_intr_cidx_update(descq->xdev,
 			descq->conf.qidx, &coal_entry->intr_cidx_info);
 	} else if (num_entries_processed == 0) {
-		pr_warn("No entries processed\n");
+		pr_debug("No entries processed\n");
 		descq = xdev->prev_descq;
 		if (descq) {
-			pr_warn("Doing stale update\n");
+			pr_debug("Doing stale update\n");
 			queue_intr_cidx_update(descq->xdev,
 				descq->conf.qidx, &coal_entry->intr_cidx_info);
 		}
@@ -278,8 +284,6 @@ static void data_intr_direct(struct xlnx_dma_dev *xdev, int vidx, int irq,
 			  flags);
 	list_for_each_safe(entry, tmp, descq_list) {
 		descq = container_of(entry, struct qdma_descq, intr_list);
-		if (!descq)
-			continue;
 
 		if (descq->conf.ping_pong_en &&
 				descq->conf.q_type == Q_C2H && descq->conf.st)

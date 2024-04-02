@@ -1,7 +1,8 @@
 /*-
  * BSD LICENSE
  *
- * Copyright(c) 2017-2022 Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2017-2022 Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2022-2023, Advanced Micro Devices, Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -36,7 +37,6 @@
 #include <sys/fcntl.h>
 #include <rte_memzone.h>
 #include <rte_string_fns.h>
-#include <rte_ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_dev.h>
 #include <rte_pci.h>
@@ -62,6 +62,13 @@
 #define PCI_CONFIG_CLASS_CODE_SHIFT        (16)
 
 #define MAX_PCIE_CAPABILITY    (48)
+
+#ifdef LATENCY_MEASUREMENT
+const struct rte_memzone *txq_lat_buf_mz;
+const struct rte_memzone *rxq_lat_buf_mz;
+double (*h2c_pidx_to_hw_cidx_lat)[LATENCY_CNT] = NULL;
+double (*c2h_pidx_to_cmpt_pidx_lat)[LATENCY_CNT] = NULL;
+#endif
 
 static void qdma_device_attributes_get(struct rte_eth_dev *dev);
 
@@ -249,6 +256,13 @@ static struct rte_pci_id qdma_pci_id_tbl[] = {
 	RTE_PCI_DEV_ID_DECL(PCI_VENDOR_ID_XILINX, 0xb148)	/** PF 1 */
 	RTE_PCI_DEV_ID_DECL(PCI_VENDOR_ID_XILINX, 0xb248)	/** PF 2 */
 	RTE_PCI_DEV_ID_DECL(PCI_VENDOR_ID_XILINX, 0xb348)	/** PF 3 */
+
+	/** Gen 5 PF */
+	/** PCIe lane width x8 */
+	RTE_PCI_DEV_ID_DECL(PCI_VENDOR_ID_XILINX, 0xb058)	/** PF 0 */
+	RTE_PCI_DEV_ID_DECL(PCI_VENDOR_ID_XILINX, 0xb158)	/** PF 1 */
+	RTE_PCI_DEV_ID_DECL(PCI_VENDOR_ID_XILINX, 0xb258)	/** PF 2 */
+	RTE_PCI_DEV_ID_DECL(PCI_VENDOR_ID_XILINX, 0xb358)	/** PF 3 */
 
 	{ .vendor_id = 0, /* sentinel */ },
 };
@@ -636,18 +650,8 @@ int qdma_eth_dev_init(struct rte_eth_dev *dev)
 	/* Getting the device attributes from the Hardware */
 	qdma_device_attributes_get(dev);
 
-	if (dma_priv->dev_cap.cmpt_trig_count_timer) {
-		/* Setting default Mode to
-		 * RTE_PMD_QDMA_TRIG_MODE_USER_TIMER_COUNT
-		 */
-		dma_priv->trigger_mode =
-					RTE_PMD_QDMA_TRIG_MODE_USER_TIMER_COUNT;
-	} else{
-		/* Setting default Mode to RTE_PMD_QDMA_TRIG_MODE_USER_TIMER */
-		dma_priv->trigger_mode = RTE_PMD_QDMA_TRIG_MODE_USER_TIMER;
-	}
-	if (dma_priv->trigger_mode == RTE_PMD_QDMA_TRIG_MODE_USER_TIMER_COUNT)
-		dma_priv->timer_count = DEFAULT_TIMER_CNT_TRIG_MODE_COUNT_TIMER;
+	/* Setting default Mode to RTE_PMD_QDMA_TRIG_MODE_USER_TIMER */
+	dma_priv->trigger_mode = RTE_PMD_QDMA_TRIG_MODE_USER_TIMER;
 
 	/* Create master resource node for queue management on the given
 	 * bus number. Node will be created only once per bus number.
@@ -767,6 +771,43 @@ int qdma_eth_dev_init(struct rte_eth_dev *dev)
 		}
 	}
 
+#ifdef LATENCY_MEASUREMENT
+	/* Create txq and rxq latency measurement shared memory
+	 * if not already created by the VF
+	 */
+	if (!h2c_pidx_to_hw_cidx_lat) {
+		/* Create a shared memory zone for the txq latency buffer */
+		txq_lat_buf_mz = rte_memzone_reserve("TXQ_LAT_BUFFER_ZONE",
+			LATENCY_MAX_QUEUES * LATENCY_CNT * sizeof(double),
+			rte_socket_id(), 0);
+		if (txq_lat_buf_mz == NULL) {
+			PMD_DRV_LOG(ERR,
+				"Failed to allocate txq latency buffer memzone\n");
+			return -1;
+		}
+
+		/* Get the virtual address of the txq latency buffer */
+		h2c_pidx_to_hw_cidx_lat =
+			(double(*)[LATENCY_CNT])txq_lat_buf_mz->addr;
+	}
+
+	if (!c2h_pidx_to_cmpt_pidx_lat) {
+		/* Create a shared memory zone for the rxq latency buffer */
+		rxq_lat_buf_mz = rte_memzone_reserve("RXQ_LAT_BUFFER_ZONE",
+			LATENCY_MAX_QUEUES * LATENCY_CNT * sizeof(double),
+			rte_socket_id(), 0);
+		if (rxq_lat_buf_mz == NULL) {
+			PMD_DRV_LOG(ERR,
+				"Failed to allocate rxq latency buffer memzone\n");
+			return -1;
+		}
+
+		/* Get the virtual address of the rxq latency buffer */
+		c2h_pidx_to_cmpt_pidx_lat =
+			(double(*)[LATENCY_CNT])rxq_lat_buf_mz->addr;
+	}
+#endif
+
 	dma_priv->reset_in_progress = 0;
 
 	return 0;
@@ -879,6 +920,12 @@ int qdma_eth_dev_uninit(struct rte_eth_dev *dev)
 		rte_free(qdma_dev->hw_access);
 		qdma_dev->hw_access = NULL;
 	}
+
+#ifdef LATENCY_MEASUREMENT
+	rte_memzone_free(txq_lat_buf_mz);
+	rte_memzone_free(rxq_lat_buf_mz);
+#endif
+
 	return 0;
 }
 

@@ -1,17 +1,20 @@
-RELEASE: 2022.1.1
+RELEASE: 2023.2.1
 =================
 
-This release is based on DPDK v20.11 and contains QDMA poll mode driver and
-QDMA test application.
+This release is based on DPDK v20.11, v21.11 and v22.11 and
+contains QDMA poll mode driver and QDMA test application.
 
-This release is validated for 
+This release is validated for
+	- On VCU1525 for QDMA5.0 2022.1 example design
 	- On VCU1525 for QDMA4.0 2020.2 example design
+	- On VCU1525 for QDMA3.1 2019.2 example design
 	- On XCVP1202 for CPM5 2022.1 example design
+	- On XCVC1902 for CPM4 2022.1 example design
 
-This release includes a patch file for dpdk-pktgen v20.12.0 that extends
+This release includes patch files for dpdk-pktgen v20.12.0 and v22.04.1 that extends
 dpdk-pktgen application to handle packets with packet sizes more than 1518 bytes
 and it disables the packet size classification logic in dpdk-pktgen to remove
-application overhead in performance measurement.This patch is used for 
+application overhead in performance measurement.This patch is used for
 performance testing with dpdk-pktgen application.
 
 The driver is validated against dpdk-pktgen and testpmd applications for API compliance.
@@ -101,16 +104,51 @@ CPM5
 ----------------------
 - Added VF 4K queues support for CPM5 design. This feature is applicable only when corresponding RTL support is added.
 
+2022.1.2 Patch Updates
+----------------------
+- Added support for QDMA5.0 which has some performance optimization changes compared to QDMA4.0
+
+2022.1.3 Patch Updates
+----------------------
+- Added PF/VF 4K queues support for CPM5 design. This feature is applicable only when corresponding RTL support is added.
+
+2023.1.0 Updates
+----------------
+- Added support for DPDK framework v21.11 and v22.11 and retained the backward compatibility for v20.11
+- Enabled 128 bit SIMD vectorization for Intel and AMD platforms by default for qdma Receive and Transmit APIs
+- Added IO memory barriers for H2C/C2H producer index and completion ring consumer index updates
+
+2023.1.1 Updates
+----------------
+- Optimized the driver code and HW register settings for performance improvements
+
+2023.1.2 Updates
+----------------
+- Optimized dpdk PMD and HW register settings for CPM5 performance improvements
+
+2023.2.0 Updates
+----------------
+- Added driver support for CPM4 design.
+- Added support for Tx and Rx queue statistics to enhance debugging capabilities
+- Added support for latency measurements in Tx and Rx data path to enhance debugging capabilities
+
+2023.2.1 Updates
+----------------
+- Added support for latency measurements in Tx and Rx data path for VF
+
 KNOWN ISSUE:
 ============
-- CPM5 Only
-	- Sufficient host memory is required to accommodate 4K queues. Tested only upto 2048 queues for PFs with our test environment though driver supports 4K queues.
-	- Tandem Boot support not available completely
-	- VF 4K queue support is not fully verified due to pdi issues
+- CPM4:
+	- HW pdi limitation
+		- VF functionality with vfio-pci on host is not verified
+		- VF functionality on VM is not verified
+		- Forwarding performance numbers are not reaching 100Gbps and capping at 98.8Gbps
+
+- CPM5:
+	- Smaller packet forwarding performance optimizations are in progress and report will be updated in subsequent releases
 
 - All Designs
 	- Function Level Reset(FLR) of PF device when VFs are attached to this PF results in mailbox communication failure
-	- DPDK C2H and Forwarding performance values for 8 queue is lesser compared to 4 queue case for both PF and VF.
 
 
 DRIVER LIMITATIONS:
@@ -123,11 +161,11 @@ DRIVER LIMITATIONS:
 	- For optimal QDMA streaming performance, packet buffers of the descriptor ring should be aligned to at least 256 bytes.
 
 
-
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2017-2022 Xilinx, Inc. All rights reserved.
+ *   Copyright (c) 2017-2022 Xilinx, Inc. All rights reserved.
+ *   Copyright (c) 2022-2023, Advanced Micro Devices, Inc. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions

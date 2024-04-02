@@ -1,7 +1,8 @@
 /*-
  * BSD LICENSE
  *
- * Copyright(c) 2017-2022 Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2017-2022 Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2022-2023, Advanced Micro Devices, Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -36,7 +37,6 @@
 #include <stdbool.h>
 #include <rte_dev.h>
 #include <rte_ethdev.h>
-#include <rte_ethdev_driver.h>
 #include <rte_spinlock.h>
 #include <rte_log.h>
 #include <rte_cycles.h>
@@ -48,6 +48,7 @@
 #include "qdma_mbox.h"
 #include "rte_pmd_qdma.h"
 #include "qdma_log.h"
+#include "qdma_dpdk_compat.h"
 
 #define QDMA_NUM_BARS          (6)
 #define DEFAULT_PF_CONFIG_BAR  (0)
@@ -107,6 +108,15 @@
 
 #define DEFAULT_QDMA_CMPT_DESC_LEN (RTE_PMD_QDMA_CMPT_DESC_LEN_8B)
 
+#define LATENCY_MAX_QUEUES 4
+#define LATENCY_CNT 20
+
+#ifdef LATENCY_MEASUREMENT
+extern const struct rte_memzone *txq_lat_buf_mz;
+extern const struct rte_memzone *rxq_lat_buf_mz;
+extern double (*h2c_pidx_to_hw_cidx_lat)[LATENCY_CNT];
+extern double (*c2h_pidx_to_cmpt_pidx_lat)[LATENCY_CNT];
+#endif
 
 enum dma_data_direction {
 	DMA_BIDIRECTIONAL = 0,
@@ -133,6 +143,45 @@ struct __attribute__ ((packed)) wb_status
 struct qdma_pkt_stats {
 	uint64_t pkts;
 	uint64_t bytes;
+};
+
+struct qdma_pkt_lat {
+	double prev;
+	double curr;
+};
+
+struct qdma_txq_stats {
+	uint16_t pidx;
+	uint16_t wrb_cidx;
+	uint16_t txq_tail;
+	uint16_t in_use_desc;
+	uint16_t nb_pkts;
+	uint16_t lat_cnt;
+	uint32_t ring_wrap_cnt;
+	uint32_t txq_full_cnt;
+#ifdef LATENCY_MEASUREMENT
+	uint32_t wrb_cidx_cnt_no_change;
+	uint32_t wrb_cidx_cnt_lt_8;
+	uint32_t wrb_cidx_cnt_8_to_32;
+	uint32_t wrb_cidx_cnt_32_to_64;
+	uint32_t wrb_cidx_cnt_gt_64;
+	struct qdma_pkt_lat pkt_lat;
+#endif
+};
+
+struct qdma_rxq_stats {
+	uint16_t pidx;
+	uint16_t wrb_pidx;
+	uint16_t wrb_cidx;
+	uint16_t rxq_cmpt_tail;
+	uint16_t pending_desc;
+	uint16_t lat_cnt;
+	uint32_t ring_wrap_cnt;
+	uint32_t mbuf_avail_cnt;
+	uint32_t mbuf_in_use_cnt;
+#ifdef LATENCY_MEASUREMENT
+	struct qdma_pkt_lat pkt_lat;
+#endif
 };
 
 /*
@@ -165,12 +214,13 @@ struct qdma_cmpt_queue {
  * Structure associated with each RX queue.
  */
 struct qdma_rx_queue {
+	/* Move more accessed elementes into first cacheline */
 	struct rte_mempool	*mb_pool; /**< mbuf pool to populate RX ring. */
 	void			*rx_ring; /**< RX ring virtual address */
 	union qdma_ul_st_cmpt_ring	*cmpt_ring;
 	struct wb_status	*wb_status;
 	struct rte_mbuf		**sw_ring; /**< address of RX software ring. */
-	struct rte_eth_dev	*dev;
+	enum rte_pmd_qdma_bypass_desc_len	bypass_desc_sz:7;
 
 	uint16_t		rx_tail;
 	uint16_t		cmpt_desc_len;
@@ -183,6 +233,9 @@ struct qdma_rx_queue {
 	struct qdma_q_pidx_reg_info	q_pidx_info;
 	struct qdma_q_cmpt_cidx_reg_info cmpt_cidx_info;
 	struct qdma_pkt_stats	stats;
+	struct qdma_rxq_stats   qstats;
+
+	struct rte_eth_dev	*dev;
 
 	uint16_t		port_id; /**< Device port identifier. */
 	uint8_t			status:1;
@@ -197,9 +250,8 @@ struct qdma_rx_queue {
 
 	union qdma_ul_st_cmpt_ring cmpt_data[QDMA_MAX_BURST_SIZE];
 
-	enum rte_pmd_qdma_bypass_desc_len	bypass_desc_sz:7;
 	uint8_t			func_id; /**< RX queue index. */
-	uint32_t		ep_addr;
+	uint64_t		ep_addr;
 
 	int8_t			ringszidx;
 	int8_t			cmpt_ringszidx;
@@ -230,29 +282,33 @@ struct qdma_rx_queue {
  * Structure associated with each TX queue.
  */
 struct qdma_tx_queue {
+	/* Move more accessed elementes into first cacheline */
+	enum rte_pmd_qdma_bypass_desc_len		bypass_desc_sz:7;
+	uint16_t			tx_fl_tail;
 	void				*tx_ring; /* TX ring virtual address*/
+	struct qdma_q_pidx_reg_info	q_pidx_info;
+
 	struct wb_status		*wb_status;
 	struct rte_mbuf			**sw_ring;/* SW ring virtual address*/
-	struct rte_eth_dev		*dev;
-	uint16_t			tx_fl_tail;
 	uint16_t			tx_desc_pend;
 	uint16_t			nb_tx_desc; /* No of TX descriptors.*/
 	rte_spinlock_t			pidx_update_lock;
-	struct qdma_q_pidx_reg_info	q_pidx_info;
 	uint64_t			offloads; /* Tx offloads */
+
+	struct rte_eth_dev		*dev;
 
 	uint8_t				st_mode:1;/* dma-mode: MM or ST */
 	uint8_t				tx_deferred_start:1;
 	uint8_t				en_bypass:1;
 	uint8_t				status:1;
-	enum rte_pmd_qdma_bypass_desc_len		bypass_desc_sz:7;
 	uint16_t			port_id; /* Device port identifier. */
 	uint8_t				func_id; /* RX queue index. */
 	int8_t				ringszidx;
 
 	struct qdma_pkt_stats stats;
+	struct qdma_txq_stats qstats;
 
-	uint32_t			ep_addr;
+	uint64_t			ep_addr;
 	uint32_t			queue_id; /* TX queue index. */
 	uint32_t			num_queues; /* TX queue index. */
 	const struct rte_memzone	*tx_mz;
@@ -277,10 +333,10 @@ struct queue_info {
 };
 
 struct qdma_pci_dev {
+	void *bar_addr[QDMA_NUM_BARS]; /* memory mapped I/O addr for BARs */
 	int config_bar_idx;
 	int user_bar_idx;
 	int bypass_bar_idx;
-	void *bar_addr[QDMA_NUM_BARS]; /* memory mapped I/O addr for BARs */
 
 	/* Driver Attributes */
 	uint32_t qsets_en;  /* no. of queue pairs enabled */
@@ -339,6 +395,9 @@ struct qdma_pci_dev {
 
 	int16_t tx_qid_statid_map[RTE_ETHDEV_QUEUE_STAT_CNTRS];
 	int16_t rx_qid_statid_map[RTE_ETHDEV_QUEUE_STAT_CNTRS];
+
+	uint8_t rx_vec_allowed:1;
+	uint8_t tx_vec_allowed:1;
 };
 
 void qdma_dev_ops_init(struct rte_eth_dev *dev);
@@ -379,6 +438,11 @@ uint16_t qdma_xmit_pkts_st(struct qdma_tx_queue *txq, struct rte_mbuf **tx_pkts,
 uint16_t qdma_xmit_pkts_mm(struct qdma_tx_queue *txq, struct rte_mbuf **tx_pkts,
 				uint16_t nb_pkts);
 
+#ifdef TEST_64B_DESC_BYPASS
+uint16_t qdma_xmit_64B_desc_bypass(struct qdma_tx_queue *txq,
+				struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
+#endif
+
 uint32_t qdma_pci_read_reg(struct rte_eth_dev *dev, uint32_t bar, uint32_t reg);
 void qdma_pci_write_reg(struct rte_eth_dev *dev, uint32_t bar,
 				uint32_t reg, uint32_t val);
@@ -408,4 +472,29 @@ bool is_vf_device_supported(struct rte_eth_dev *dev);
 bool is_pf_device_supported(struct rte_eth_dev *dev);
 
 void qdma_check_errors(void *arg);
+
+struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
+		uint16_t pkt_length, uint16_t *tail);
+int reclaim_tx_mbuf(struct qdma_tx_queue *txq,
+		uint16_t cidx, uint16_t free_cnt);
+int qdma_ul_extract_st_cmpt_info(void *ul_cmpt_entry, void *cmpt_info);
+
+/* Transmit API for Streaming mode */
+uint16_t qdma_xmit_pkts_vec(void *tx_queue,
+		struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
+uint16_t qdma_xmit_pkts_st_vec(struct qdma_tx_queue *txq,
+		struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
+
+/* Receive API for Streaming mode */
+uint16_t qdma_recv_pkts_vec(void *rx_queue,
+		struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
+uint16_t qdma_recv_pkts_st_vec(struct qdma_rx_queue *rxq,
+		struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
+
+void __rte_cold qdma_set_tx_function(struct rte_eth_dev *dev);
+void __rte_cold qdma_set_rx_function(struct rte_eth_dev *dev);
+
+int qdma_tx_qstats_clear(struct rte_eth_dev *dev, uint16_t queue);
+int qdma_rx_qstats_clear(struct rte_eth_dev *dev, uint16_t queue);
+
 #endif /* ifndef __QDMA_H__ */

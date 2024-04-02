@@ -1,8 +1,8 @@
 /*
  * This file is part of the Xilinx DMA IP Core driver for Linux
  *
- * Copyright (c) 2017-2022,  Xilinx, Inc.
- * All rights reserved.
+ * Copyright (c) 2017-2022, Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2022, Advanced Micro Devices, Inc. All rights reserved.
  *
  * This source code is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -253,11 +253,18 @@ static int qdma_request_wait_for_cmpl(struct xlnx_dma_dev *xdev,
 	 *  call back is completed
 	 */
 
-	if (req->timeout_ms)
+	if (req->timeout_ms) {
+#ifdef __XRT__
+		qdma_waitq_wait_event_timeout(cb->wq, cb->done &&
+				(descq->pidx == descq->cidx),
+				msecs_to_jiffies(req->timeout_ms));
+#else
 		qdma_waitq_wait_event_timeout(cb->wq, cb->done,
-			msecs_to_jiffies(req->timeout_ms));
-	else
+				msecs_to_jiffies(req->timeout_ms));
+#endif
+	} else {
 		qdma_waitq_wait_event(cb->wq, cb->done);
+	}
 
 	lock_descq(descq);
 	/** if the call back is not done, request timed out
@@ -1116,7 +1123,9 @@ int qdma_queue_config(unsigned long dev_hndl, unsigned long qid,
 		return rv;
 
 	/** configure descriptor queue */
+	lock_descq(descq);
 	qdma_descq_config(descq, qconf, 1);
+	unlock_descq(descq);
 
 	snprintf(buf, buflen,
 		"Queue %s id %u is configured with the qconf passed ",
@@ -1131,6 +1140,8 @@ int qdma_queue_config(unsigned long dev_hndl, unsigned long qid,
  * qdma_queue_list() - display all configured queues in a string buffer
  *
  * @param[in]	dev_hndl:	dev_hndl returned from qdma_device_open()
+ * @param[in]	qidx:		Queue index
+ * @param[in]	num_q:		Number of Queues to list
  * @param[in]	buflen:		length of the input buffer
  * @param[out]	buf:		message buffer
  *
@@ -1138,7 +1149,8 @@ int qdma_queue_config(unsigned long dev_hndl, unsigned long qid,
  *	otherwise 0
  * @return	<0: error
  *****************************************************************************/
-int qdma_queue_list(unsigned long dev_hndl, char *buf, int buflen)
+int qdma_queue_list(unsigned long dev_hndl, int qidx, int num_q, char *buf,
+			int buflen)
 {
 	struct xlnx_dma_dev *xdev = (struct xlnx_dma_dev *)dev_hndl;
 	struct qdma_dev *qdev;
@@ -1202,7 +1214,8 @@ int qdma_queue_list(unsigned long dev_hndl, char *buf, int buflen)
 	 */
 	if (h2c_qcnt) {
 		descq = qdev->h2c_descq;
-		for (i = 0; i < h2c_qcnt; i++, descq++) {
+		descq =  descq + qidx;
+		for (i = qidx; i < (qidx + num_q); i++, descq++) {
 			lock_descq(descq);
 			if (descq->q_state != Q_STATE_DISABLED)
 				cur +=
@@ -1216,7 +1229,8 @@ int qdma_queue_list(unsigned long dev_hndl, char *buf, int buflen)
 
 	if (c2h_qcnt) {
 		descq = qdev->c2h_descq;
-		for (i = 0; i < c2h_qcnt; i++, descq++) {
+		descq =  descq + qidx;
+		for (i = qidx; i < (qidx + num_q); i++, descq++) {
 			lock_descq(descq);
 			if (descq->q_state != Q_STATE_DISABLED)
 				cur +=
@@ -1230,7 +1244,8 @@ int qdma_queue_list(unsigned long dev_hndl, char *buf, int buflen)
 
 	if (cmpt_qcnt) {
 		descq = qdev->cmpt_descq;
-		for (i = 0; i < cmpt_qcnt; i++, descq++) {
+		descq =  descq + qidx;
+		for (i = qidx; i < (qidx + num_q); i++, descq++) {
 			lock_descq(descq);
 			if (descq->q_state != Q_STATE_DISABLED)
 				cur +=
@@ -1481,7 +1496,9 @@ int qdma_queue_add(unsigned long dev_hndl, struct qdma_queue_conf *qconf,
 	qcnt = qdma_get_device_active_queue_count(xdev->dma_device_index,
 			xdev->func_id, qconf->q_type);
 #else
+	spin_unlock(&qdev->lock);
 	qdma_dev_get_active_qcnt(xdev, &h2c_qcnt, &c2h_qcnt, &cmpt_qcnt);
+	spin_lock(&qdev->lock);
 	if (qconf->q_type == Q_H2C)
 		qcnt = h2c_qcnt;
 	else if (qconf->q_type == Q_C2H)
@@ -1580,7 +1597,9 @@ int qdma_queue_add(unsigned long dev_hndl, struct qdma_queue_conf *qconf,
 		if (rv > 0) {
 			/** support only 1 queue in legacy interrupt mode */
 			intr_legacy_clear(descq);
+			lock_descq(descq);
 			descq->q_state = Q_STATE_DISABLED;
+			unlock_descq(descq);
 			pr_debug("qdma%05x - Q%u - No free queues %u/%u.\n",
 				xdev->conf.bdf, descq->conf.qidx,
 				rv, 1);
@@ -1591,7 +1610,9 @@ int qdma_queue_add(unsigned long dev_hndl, struct qdma_queue_conf *qconf,
 			return rv;
 		} else if (rv < 0) {
 			rv = -EINVAL;
+			lock_descq(descq);
 			descq->q_state = Q_STATE_DISABLED;
+			unlock_descq(descq);
 			pr_debug("qdma%05x Legacy interrupt setup failed.\n",
 					xdev->conf.bdf);
 			snprintf(buf, buflen,
@@ -1778,7 +1799,6 @@ int qdma_queue_start(unsigned long dev_hndl, unsigned long id,
 		unlock_descq(descq);
 		return -ERANGE;
 	}
-	unlock_descq(descq);
 	/** complete the queue configuration*/
 	rv = qdma_descq_config_complete(descq);
 	if (rv < 0) {
@@ -1786,8 +1806,10 @@ int qdma_queue_start(unsigned long dev_hndl, unsigned long id,
 			descq->conf.name, descq->qidx_hw);
 		snprintf(buf, buflen,
 			"%s config failed.\n", descq->conf.name);
+		unlock_descq(descq);
 		return -EIO;
 	}
+	unlock_descq(descq);
 
 	/** allocate the queue resources*/
 	rv = qdma_descq_alloc_resource(descq);
@@ -2302,7 +2324,7 @@ void sgl_unmap(struct pci_dev *pdev, struct qdma_sw_sg *sg, unsigned int sgcnt,
 		if (!sg->pg)
 			break;
 		if (sg->dma_addr) {
-			pci_unmap_page(pdev, sg->dma_addr - sg->offset,
+			dma_unmap_page(&pdev->dev, sg->dma_addr - sg->offset,
 							PAGE_SIZE, dir);
 			sg->dma_addr = 0UL;
 		}
@@ -2334,8 +2356,9 @@ int sgl_map(struct pci_dev *pdev, struct qdma_sw_sg *sgl, unsigned int sgcnt,
 	 */
 	for (i = 0; i < sgcnt; i++, sg++) {
 		/* !! TODO  page size !! */
-		sg->dma_addr = pci_map_page(pdev, sg->pg, 0, PAGE_SIZE, dir);
-		if (unlikely(pci_dma_mapping_error(pdev, sg->dma_addr))) {
+		sg->dma_addr = dma_map_page(&pdev->dev, sg->pg, 0, PAGE_SIZE,
+				dir);
+		if (unlikely(dma_mapping_error(&pdev->dev, sg->dma_addr))) {
 			pr_err("map sgl failed, sg %d, %u.\n", i, sg->len);
 			if (i)
 				sgl_unmap(pdev, sgl, i, dir);
@@ -2649,7 +2672,8 @@ int qdma_init_st_ctxt(unsigned long dev_hndl, char *buf, int buflen)
 	}
 
 	if ((xdev->version_info.ip_type == QDMA_VERSAL_HARD_IP) &&
-		(xdev->version_info.device_type == QDMA_DEVICE_VERSAL_CPM5)) {
+		((xdev->version_info.device_type == QDMA_DEVICE_VERSAL_CPM4) ||
+		(xdev->version_info.device_type == QDMA_DEVICE_VERSAL_CPM5))) {
 		if (xdev->hw.qdma_init_st_ctxt == NULL) {
 			pr_err("Err: Feature not supported\n");
 			snprintf(buf, buflen, "Err: Feature not supported\n");

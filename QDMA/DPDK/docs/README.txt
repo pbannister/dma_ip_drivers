@@ -20,7 +20,7 @@ Note: This DPDK driver and applciation were tested on Ubuntu 18.04 machine.
 
 1.) Setup: Download and modifications
 
-The reference driver code requires DPDK version 20.11.
+The reference driver code requires DPDK version 22.11.
 Follow the steps below to download the proper version of DPDK and apply
 driver code and test application supplied in the GitHub.
 
@@ -34,12 +34,12 @@ is installed and move to this directory.
  $ cd <server_dir>/<dpdk_test_area>
  $ git clone http://dpdk.org/git/dpdk-stable
  $ cd dpdk-stable
- $ git checkout v20.11
+ $ git checkout v22.11
  $ git clone git://dpdk.org/dpdk-kmods
  $ cp -r <dpdk_sw_database>/drivers/net/qdma ./drivers/net/
  $ cp -r <dpdk_sw_database>/examples/qdma_testapp ./examples/
 
-	Additionally, make below changes to the DPDK 20.11 tree to build QDMA driver,
+	Additionally, make below changes to the DPDK 22.11 tree to build QDMA driver,
 	support 4K queues and populate Xilinx devices for binding.
 
 		i. Add QDMA driver
@@ -48,7 +48,7 @@ is installed and move to this directory.
 				CONFIG_RTE_MAX_ETHPORTS=256
 				CONFIG_RTE_MAX_QUEUES_PER_PORT=4096
 
-			b. Add below lines to ./config/meson.build in DPDK 20.11 tree
+			b. Add below lines to ./config/meson.build in DPDK 22.11 tree
 				# Set maximum Ethernet ports to 256
 				dpdk_conf.set('RTE_MAX_ETHPORTS', 256)
 
@@ -477,14 +477,56 @@ Commands supported by the qdma_testapp CLI
 
 	The keyboard keys Ctrl and D when pressed together quits the application.
 
+Instructions on how to use proc-info test for driver debugging:
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+1. Apply the below patch on top of the code changes mentioned in the dpdk driver documentation page and build the dpdk source code.
+	patch -p1 < 0001-Add-QDMA-xdebug-to-proc-info-of-dpdk-22.11.patch
+
+2. Run the testpmd application as primary application on one linux terminal
+	./build/app/dpdk-testpmd -l 1-17 -n 4 -a 65:00.0,desc_prefetch=1,cmpt_desc_len=16 --log-level=3 -- --burst=256 -i --nb-cores=1 --rxq=1 --txq=1 --forward-mode=io --rxd=2048 --txd=2048 --mbcache=512 --mbuf-size=4096
+
+3. Run the proc info as secondary application on another linux terminal as mentioned below with diferent port combinations.
+One port:
+	./build/app/dpdk-proc-info -a 81:00.0 --log-level=7 -- -p 1 -q 0 -g
+	./build/app/dpdk-proc-info -a 81:00.0 --log-level=7 -- -p 1 -q 0 --qdevice
+	./build/app/dpdk-proc-info -a 81:00.0 --log-level=7 -- -p 1 -q 0 --qinfo
+	./build/app/dpdk-proc-info -a 81:00.0 --log-level=7 -- -p 1 -q 0 --qstats_clr
+	./build/app/dpdk-proc-info -a 81:00.0 --log-level=7 -- -p 1 -q 0 --qstats
+	./build/app/dpdk-proc-info -a 81:00.0 --log-level=7 -- -p 1 -q 0 --desc-dump tx
+	./build/app/dpdk-proc-info -a 81:00.0 --log-level=7 -- -p 1 -q 0 --desc-dump rx
+	./build/app/dpdk-proc-info -a 81:00.0 --log-level=7 -- -p 1 -q 0 --desc-dump cmpt
+	./build/app/dpdk-proc-info -a 81:00.0 --log-level=7 -- -p 1 -q 0 --stats
+Two ports:
+	./build/app/dpdk-proc-info -a 81:00.0, -a 81:00.1, --log-level=7 -- -p 3 -q 0 -g
+	./build/app/dpdk-proc-info -a 81:00.0, -a 81:00.1, --log-level=7 -- -p 3 -q 0 --qdevice
+	./build/app/dpdk-proc-info -a 81:00.0, -a 81:00.1, --log-level=7 -- -p 3 -q 0 --qinfo
+	./build/app/dpdk-proc-info -a 81:00.0, -a 81:00.1, --log-level=7 -- -p 3 -q 0 --qstats_clr
+	./build/app/dpdk-proc-info -a 81:00.0, -a 81:00.1, --log-level=7 -- -p 3 -q 0 --qstats
+	./build/app/dpdk-proc-info -a 81:00.0, -a 81:00.1, --log-level=7 -- -p 3 -q 0 --desc-dump tx
+	./build/app/dpdk-proc-info -a 81:00.0, -a 81:00.1, --log-level=7 -- -p 3 -q 0 --desc-dump rx
+	./build/app/dpdk-proc-info -a 81:00.0, -a 81:00.1, --log-level=7 -- -p 3 -q 0 --desc-dump cmpt
+	./build/app/dpdk-proc-info -a 81:00.0, -a 81:00.1, --log-level=7 -- -p 3 -q 0 --stats
+4. Available commands for proc info are mentioned below.
+		-m to display DPDK memory zones, segments and TAILQ information
+		-g to display DPDK QDMA PMD global CSR info
+		-p PORTMASK: hexadecimal bitmask of ports to retrieve stats for
+		--stats: to display port statistics, enabled by default
+		--qdevice: to display QDMA device structure
+		--qinfo: to display QDMA queue context and queue structures
+		--qstats: to display QDMA Tx and Rx queue stats
+		--qstats_clr: to clear QDMA Tx and Rx queue stats
+		--desc-dump {rx | tx | cmpt}: to dump QDMA queue descriptors
+		--xstats: to display extended port statistics, disabled by default
+		--metrics: to display derived metrics of the ports, disabled by
 
 
 
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2017-2022 Xilinx, Inc. All rights reserved.
+ *   Copyright (c) 2017-2022 Xilinx, Inc. All rights reserved.
+ *   Copyright (c) 2022-2023, Advanced Micro Devices, Inc. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions

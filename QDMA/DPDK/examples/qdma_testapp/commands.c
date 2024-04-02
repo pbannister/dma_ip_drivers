@@ -1,7 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2017-2022 Xilinx, Inc. All rights reserved.
+ *   Copyright (c) 2017-2022 Xilinx, Inc. All rights reserved.
+ *   Copyright (c) 2022-2023, Advanced Micro Devices, Inc. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -33,7 +34,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright (c) 2010-2014 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -169,6 +170,10 @@ static void cmd_help_parsed(__attribute__((unused)) void *parsed_result,
 			":Reads the field info for the specified number of registers\n"
 			"\tqueue_dump           <port-id> <queue-id>  "
 			":To dump the queue-context of a queue-number\n"
+			"\tqstats               <port-id> <queue-id>  "
+			":To dump the queue-stats of a queue-number\n"
+			"\tqstats_clr               <port-id> <queue-id>  "
+			":To clear the queue-stats of a queue-number\n"
 			"\tdesc_dump            <port-id> <queue-id>  "
 			":To dump the descriptor-fields of a "
 			"queue-number\n"
@@ -612,9 +617,10 @@ static void cmd_obj_dma_to_device_parsed(void *parsed_result,
 	int ld_size = 0, loop = 0, ret, j, zbyte = 0, user_bar_idx;
 	off_t ret_val;
 	int port_id = 0, num_queues = 0, input_size = 0, num_loops = 0;
-	int dst_addr = 0;
+	uint64_t dst_addr = 0;
 	uint32_t regval = 0;
 	unsigned int q_data_size = 0;
+	char *p = NULL;
 
 	cmdline_printf(cl, "xmit on Port:%s, filename:%s, num-queues:%s\n\n",
 				res->port_id, res->filename, res->queues);
@@ -651,15 +657,18 @@ static void cmd_obj_dma_to_device_parsed(void *parsed_result,
 			return;
 		}
 		user_bar_idx = pinfo[port_id].user_bar_idx;
+
+#if !defined(TANDEM_BOOT_SUPPORTED)
 		regval = PciRead(user_bar_idx, C2H_CONTROL_REG, port_id);
+#endif
 
 		input_size = atoi(res->size);
 		num_loops = atoi(res->loops);
-		dst_addr = atoi(res->dst_addr);
+		dst_addr = strtoull(res->dst_addr, &p, 0);
 
-#ifndef PERF_BENCHMARK
+#if !defined(PERF_BENCHMARK) && !defined(TANDEM_BOOT_SUPPORTED)
 		if (dst_addr + input_size > BRAM_SIZE) {
-			cmdline_printf(cl, "Error: (dst_addr %d + input size "
+			cmdline_printf(cl, "Error: (dst_addr %ld + input size "
 					"%d) shall be less than "
 					"BRAM_SIZE %d.\n", dst_addr,
 					input_size, BRAM_SIZE);
@@ -691,14 +700,17 @@ static void cmd_obj_dma_to_device_parsed(void *parsed_result,
 
 		do {
 			total_size = input_size;
-			dst_addr = atoi(res->dst_addr);
+			dst_addr = strtoull(res->dst_addr, &p, 0);
 			q_data_size = 0;
 			/* transmit data on the number of Queues configured
 			 * from the input file
 			 */
 			for (i = 0, j = 0; i < num_queues; i++, j++) {
 				dst_addr += q_data_size;
+
+#ifndef TANDEM_BOOT_SUPPORTED
 				dst_addr %= BRAM_SIZE;
+#endif
 
 				if ((unsigned int)i >=
 						pinfo[port_id].st_queues) {
@@ -839,7 +851,7 @@ static void cmd_obj_dma_from_device_parsed(void *parsed_result,
 	int loop = 0, ret, j;
 	off_t ret_val;
 	int port_id = 0, num_queues = 0, input_size = 0, num_loops = 0;
-	int src_addr = 0;
+	uint64_t src_addr = 0;
 	unsigned int q_data_size = 0;
 
 	cmdline_printf(cl, "recv on Port:%s, filename:%s\n",
@@ -881,7 +893,7 @@ static void cmd_obj_dma_from_device_parsed(void *parsed_result,
 		src_addr = atoi(res->src_addr);
 #ifndef PERF_BENCHMARK
 		if (src_addr + input_size > BRAM_SIZE) {
-			cmdline_printf(cl, "Error: (src_addr %d + input "
+			cmdline_printf(cl, "Error: (src_addr %ld + input "
 					"size %d) shall be less than "
 					"BRAM_SIZE %d.\n", src_addr,
 					input_size, BRAM_SIZE);
@@ -1225,6 +1237,144 @@ cmdline_parse_inst_t cmd_obj_queue_dump = {
 
 };
 
+/*Command queue-stats dump*/
+
+struct cmd_obj_qstats_result {
+	cmdline_fixed_string_t action;
+	cmdline_fixed_string_t port_id;
+	cmdline_fixed_string_t queue_id;
+};
+
+static void cmd_obj_qstats_parsed(void *parsed_result,
+			       struct cmdline *cl,
+			       __attribute__((unused)) void *data)
+{
+	struct cmd_obj_qstats_result *res = parsed_result;
+
+	cmdline_printf(cl, "queue-dump on Port:%s, queue-id:%s\n\n",
+						res->port_id, res->queue_id);
+
+	{
+		int port_id = atoi(res->port_id);
+		int qid = atoi(res->queue_id);
+		int bar_id = 0x0;
+
+		bar_id = pinfo[port_id].config_bar_idx;
+		if (bar_id < 0) {
+			cmdline_printf(cl, "Error: fetching QDMA config BAR-id "
+					"on port-id:%d not supported\n Please "
+					"enter valid port-id\n", port_id);
+			return;
+		}
+		if (port_id >= num_ports) {
+			cmdline_printf(cl, "Error: port-id:%d not supported\n "
+					"Please enter valid port-id\n",
+					port_id);
+			return;
+		}
+		if ((unsigned int)qid >= pinfo[port_id].num_queues) {
+			cmdline_printf(cl, "Error: queue-id:%d is greater than "
+					"the number of confgiured queues in "
+					"the port\n Please enter valid "
+					"queue-id\n", qid);
+			return;
+		}
+		rte_pmd_qdma_qstats(port_id, qid);
+	}
+}
+
+cmdline_parse_token_string_t cmd_obj_action_qstats =
+	TOKEN_STRING_INITIALIZER(struct cmd_obj_qstats_result, action,
+								"qstats");
+cmdline_parse_token_string_t cmd_obj_qstats_port_id =
+	TOKEN_STRING_INITIALIZER(struct cmd_obj_qstats_result, port_id,
+									NULL);
+cmdline_parse_token_string_t cmd_obj_qstats_queue_id =
+	TOKEN_STRING_INITIALIZER(struct cmd_obj_qstats_result, queue_id,
+									NULL);
+
+cmdline_parse_inst_t cmd_obj_qstats = {
+	.f = cmd_obj_qstats_parsed,  /* function to call */
+	.data = NULL,      /* 2nd arg of func */
+	.help_str = "qstats port-id queue_id",
+	.tokens = {        /* token list, NULL terminated */
+		(void *)&cmd_obj_action_qstats,
+		(void *)&cmd_obj_qstats_port_id,
+		(void *)&cmd_obj_qstats_queue_id,
+		NULL,
+	},
+
+};
+
+/*Command queue-stats-cleaar dump*/
+
+struct cmd_obj_qstats_clr_result {
+	cmdline_fixed_string_t action;
+	cmdline_fixed_string_t port_id;
+	cmdline_fixed_string_t queue_id;
+};
+
+static void cmd_obj_qstats_clr_parsed(void *parsed_result,
+			       struct cmdline *cl,
+			       __attribute__((unused)) void *data)
+{
+	struct cmd_obj_qstats_clr_result *res = parsed_result;
+
+	cmdline_printf(cl, "queue-dump on Port:%s, queue-id:%s\n\n",
+						res->port_id, res->queue_id);
+
+	{
+		int port_id = atoi(res->port_id);
+		int qid = atoi(res->queue_id);
+		int bar_id = 0x0;
+
+		bar_id = pinfo[port_id].config_bar_idx;
+		if (bar_id < 0) {
+			cmdline_printf(cl, "Error: fetching QDMA config BAR-id "
+					"on port-id:%d not supported\n Please "
+					"enter valid port-id\n", port_id);
+			return;
+		}
+		if (port_id >= num_ports) {
+			cmdline_printf(cl, "Error: port-id:%d not supported\n "
+					"Please enter valid port-id\n",
+					port_id);
+			return;
+		}
+		if ((unsigned int)qid >= pinfo[port_id].num_queues) {
+			cmdline_printf(cl, "Error: queue-id:%d is greater than "
+					"the number of confgiured queues in "
+					"the port\n Please enter valid "
+					"queue-id\n", qid);
+			return;
+		}
+		rte_pmd_qdma_qstats_clear(port_id, qid);
+	}
+}
+
+cmdline_parse_token_string_t cmd_obj_action_qstats_clr =
+	TOKEN_STRING_INITIALIZER(struct cmd_obj_qstats_clr_result, action,
+								"qstats_clr");
+cmdline_parse_token_string_t cmd_obj_qstats_clr_port_id =
+	TOKEN_STRING_INITIALIZER(struct cmd_obj_qstats_clr_result, port_id,
+									NULL);
+cmdline_parse_token_string_t cmd_obj_qstats_clr_queue_id =
+	TOKEN_STRING_INITIALIZER(struct cmd_obj_qstats_clr_result, queue_id,
+									NULL);
+
+cmdline_parse_inst_t cmd_obj_qstats_clr = {
+	.f = cmd_obj_qstats_clr_parsed,  /* function to call */
+	.data = NULL,      /* 2nd arg of func */
+	.help_str = "qstats_clr port-id queue_id",
+	.tokens = {        /* token list, NULL terminated */
+		(void *)&cmd_obj_action_qstats_clr,
+		(void *)&cmd_obj_qstats_clr_port_id,
+		(void *)&cmd_obj_qstats_clr_queue_id,
+		NULL,
+	},
+
+};
+
 /* Command descriptor dump */
 
 struct cmd_obj_desc_dump_result {
@@ -1321,7 +1471,9 @@ static void cmd_obj_load_cmds_parsed(void *parsed_result,
 		return;
 	}
 
-	rdline_reset(&cl->rdl);
+
+	struct rdline *rdl = cmdline_get_rdline(cl);
+	rdline_reset(rdl);
 	{
 		cmdline_in(cl, "\r", 1);
 		while (fgets(buff, sizeof(buff), fp))
@@ -1365,6 +1517,8 @@ cmdline_parse_ctx_t main_ctx[] = {
 	(cmdline_parse_inst_t *)&cmd_obj_reg_dump,
 	(cmdline_parse_inst_t *)&cmd_obj_reg_info_read,
 	(cmdline_parse_inst_t *)&cmd_obj_queue_dump,
+	(cmdline_parse_inst_t *)&cmd_obj_qstats,
+	(cmdline_parse_inst_t *)&cmd_obj_qstats_clr,
 	(cmdline_parse_inst_t *)&cmd_obj_desc_dump,
 	(cmdline_parse_inst_t *)&cmd_obj_load_cmds,
 	(cmdline_parse_inst_t *)&cmd_help,

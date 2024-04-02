@@ -1,5 +1,6 @@
 /*
- * Copyright(c) 2019-2022 Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2019-2022, Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2022, Advanced Micro Devices, Inc. All rights reserved.
  *
  * BSD LICENSE
  *
@@ -1427,7 +1428,7 @@ static int dump_cpm4_context(struct qdma_descq_context *queue_context,
 	int n;
 	int len = 0;
 	int rv;
-	char banner[DEBGFS_LINE_SZ];
+	char banner[DEBGFS_LINE_SZ] = "";
 
 	if (queue_context == NULL) {
 		qdma_log_error("%s: queue_context is NULL, err:%d\n",
@@ -1941,7 +1942,7 @@ static int dump_cpm4_intr_context(struct qdma_indirect_intr_ctxt *intr_ctx,
 	int n;
 	int len = 0;
 	int rv;
-	char banner[DEBGFS_LINE_SZ];
+	char banner[DEBGFS_LINE_SZ] = "";
 
 	qdma_cpm4_fill_intr_ctxt(intr_ctx);
 
@@ -4938,6 +4939,15 @@ int qdma_cpm4_init_ctxt_memory(void *dev_hndl)
 		int sel = QDMA_CTXT_SEL_SW_C2H;
 		int rv;
 
+
+#ifdef TANDEM_BOOT_SUPPORTED
+		for (; sel <=  QDMA_CTXT_SEL_CR_H2C; sel++) {
+			rv = qdma_cpm4_indirect_reg_clear(dev_hndl,
+					(enum ind_ctxt_cmd_sel)sel, i);
+			if (rv < 0)
+				return rv;
+		}
+#else
 		for (; sel <= QDMA_CTXT_SEL_PFTCH; sel++) {
 			/** if the st mode(h2c/c2h) not enabled
 			 *  in the design, then skip the PFTCH
@@ -4957,6 +4967,7 @@ int qdma_cpm4_init_ctxt_memory(void *dev_hndl)
 			if (rv < 0)
 				return rv;
 		}
+#endif
 	}
 
 	/* fmap */
@@ -4971,6 +4982,60 @@ int qdma_cpm4_init_ctxt_memory(void *dev_hndl)
 #endif
 	return 0;
 }
+
+#ifdef TANDEM_BOOT_SUPPORTED
+/*****************************************************************************/
+/**
+ * qdma_cpm4_init_st_ctxt() - Initialize the ST context
+ *
+ * @dev_hndl: device handle
+ *
+ * Return: returns the platform specific error code
+ *****************************************************************************/
+int qdma_cpm4_init_st_ctxt(void *dev_hndl)
+{
+	uint32_t data[QDMA_REG_IND_CTXT_REG_COUNT];
+	uint16_t i = 0;
+	struct qdma_dev_attributes dev_info;
+
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+					__func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+
+	qdma_memset(data, 0, sizeof(uint32_t) * QDMA_REG_IND_CTXT_REG_COUNT);
+	qdma_cpm4_get_device_attributes(dev_hndl, &dev_info);
+
+	for (; i < dev_info.num_qs; i++) {
+		int sel = QDMA_CTXT_SEL_CMPT;
+		int rv;
+
+		for (; sel <= QDMA_CTXT_SEL_PFTCH; sel++) {
+			/** if the st mode(h2c/c2h) not enabled
+			 *  in the design, then skip the PFTCH
+			 *  and CMPT context setup
+			 */
+			if ((dev_info.st_en == 0) &&
+				((sel == QDMA_CTXT_SEL_PFTCH) ||
+				(sel == QDMA_CTXT_SEL_CMPT))) {
+				qdma_log_debug("%s: ST context is skipped:",
+					__func__);
+				qdma_log_debug("sel = %d\n", sel);
+				continue;
+			}
+
+			rv = qdma_cpm4_indirect_reg_clear(dev_hndl,
+					(enum ind_ctxt_cmd_sel)sel, i);
+			if (rv < 0)
+				return rv;
+		}
+	}
+
+	return QDMA_SUCCESS;
+
+}
+#endif
 
 static int get_reg_entry(uint32_t reg_addr, int *reg_entry)
 {
