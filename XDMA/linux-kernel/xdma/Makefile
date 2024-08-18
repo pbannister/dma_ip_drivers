@@ -35,6 +35,7 @@ ifneq ($(KERNELRELEASE),)
 else
 	BUILDSYSTEM_DIR:=/lib/modules/$(shell uname -r)/build
 	PWD:=$(shell pwd)
+
 all :
 	$(MAKE) -C $(BUILDSYSTEM_DIR) M=$(PWD) modules
 
@@ -43,7 +44,7 @@ clean:
 	@/bin/rm -f *.ko modules.order *.mod.c *.o *.o.ur-safe .*.o.cmd
 
 install: all
-	@rm -f /lib/modules/5.15.0-67-generic/extra/xdma.ko
+	@rm -f /lib/modules/$(shell uname -r)/extra/xdma.ko
 	@echo "installing kernel modules to /lib/modules/$(shell uname -r)/xdma ..."
 	@mkdir -p -m 755 /lib/modules/$(shell uname -r)/xdma
 	@install -v -m 644 *.ko /lib/modules/$(shell uname -r)/xdma
@@ -54,7 +55,12 @@ uninstall:
 	@/bin/rm -rf /lib/modules/$(shell uname -r)/xdma
 	@depmod -a
 
+vscode:
+	python .vscode/generate_compdb.py -O $(BUILDSYSTEM_DIR) $(PWD)
 
+build : all
+rebuild : clean all
 
+.PHONY: all clean build rebuild install vscode
 
 endif
